@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using TeddyBench.Avalonia.Services;
 using TeddyBench.Avalonia.ViewModels;
 using TeddyBench.Core;
+using TeddyBench.Core.Tracks;
 
 [assembly: Avalonia.Headless.AvaloniaTestApplication(typeof(TeddyBench.Avalonia.Tests.TestAppBuilder))]
 
@@ -87,7 +88,9 @@ namespace TeddyBench.Avalonia.Tests
         public readonly Queue<string> Folders = new Queue<string>();
         public readonly Queue<string[]> Files = new Queue<string[]>();
         public ReportResult Report;
+        /// <summary>Answer of the Sort tracks dialog, given the files in their initial order.</summary>
         public Func<string[], string[]> Sort = files => files;
+        public string SortNote;
         public string TagDump;
         public bool LogVisible;
         public FakeOperation LastOperation;
@@ -149,10 +152,11 @@ namespace TeddyBench.Avalonia.Tests
             return Task.FromResult(Report);
         }
 
-        public Task<string[]> SortTracks(string[] files)
+        public Task<string[]> SortTracks(TrackList tracks, string note)
         {
             Call("sort");
-            return Task.FromResult(Sort(files));
+            SortNote = note;
+            return Task.FromResult(Sort(tracks.Files));
         }
 
         public Task<string> ShowTagDump(bool display, string initial)

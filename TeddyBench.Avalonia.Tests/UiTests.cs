@@ -220,24 +220,52 @@ namespace TeddyBench.Avalonia.Tests
         }
 
         [AvaloniaFact]
-        public void TrackSortDialog_MovesTracks()
+        public void TrackSortDialog_SortsMovesRemovesAndAddsFolders()
         {
-            string[] files = { Fixtures.Mp3, Fixtures.Ogg, Path.Combine(Fixtures.Album, "02 MONO22K.MP3") };
-            var dialog = new TrackSortDialog(files);
-            dialog.Show();
-            Dispatcher.UIThread.RunJobs();
+            using (var dir = new TempDir())
+            {
+                string root = dir.Combine("Hörspiel");
+                Directory.CreateDirectory(Path.Combine(root, "CD 1"));
+                Directory.CreateDirectory(Path.Combine(root, "CD 2"));
+                File.Copy(Fixtures.Mp3, Path.Combine(root, "CD 1", "Folge 10.mp3"));
+                File.Copy(Path.Combine(Fixtures.Album, "02 MONO22K.MP3"), Path.Combine(root, "CD 1", "Folge 2.mp3"));
+                File.Copy(Fixtures.Ogg, Path.Combine(root, "CD 1", "Folge 1.ogg"));
+                File.Copy(Fixtures.Mp3, Path.Combine(root, "CD 2", "Folge 3.mp3"));
 
-            var list = dialog.GetVisualDescendants().OfType<ListBox>().Single();
-            /* ID3 track numbers: stereo44k=1, MONO22K=2, the Ogg has none and goes last */
-            var initial = list.Items.Cast<TrackSortDialog.Track>().Select(t => Path.GetFileName(t.File)).ToArray();
-            Assert.Equal(new[] { "01 stereo44k.mp3", "02 MONO22K.MP3", "03 opus48k.ogg" }, initial);
-            Screenshot(dialog, "dialog-tracksort");
+                var dialog = new TrackSortDialog(new[] { Path.Combine(root, "CD 1") });
+                dialog.Show();
+                Dispatcher.UIThread.RunJobs();
 
-            list.SelectedItems.Add(list.Items.Cast<TrackSortDialog.Track>().Last());
-            Click(FindButton(dialog, "Up"));
-            Click(FindButton(dialog, "OK"));
+                var list = dialog.GetVisualDescendants().OfType<ListBox>().Single();
+                var sortBox = dialog.GetVisualDescendants().OfType<ComboBox>().Single();
+                string[] Names() => list.Items.Cast<TrackSortDialog.Row>().Select(r => Path.GetFileName(r.File)).ToArray();
 
-            Assert.Equal(new[] { "01 stereo44k.mp3", "03 opus48k.ogg", "02 MONO22K.MP3" }, dialog.Result.Select(Path.GetFileName).ToArray());
+                /* default: folder, then natural name order */
+                Assert.Equal("Folder, then name", sortBox.SelectedItem);
+                Assert.Equal(new[] { "Folge 1.ogg", "Folge 2.mp3", "Folge 10.mp3" }, Names());
+
+                /* ID3 track numbers: Folge 10 = 1, Folge 2 = 2, the Ogg has none and goes last */
+                sortBox.SelectedIndex = 2;
+                Assert.Equal(new[] { "Folge 10.mp3", "Folge 2.mp3", "Folge 1.ogg" }, Names());
+
+                sortBox.SelectedIndex = 0;
+                dialog.AddPaths(new[] { Path.Combine(root, "CD 2"), Path.Combine(root, "CD 1", "Folge 2.mp3") });
+                Assert.Equal(new[] { "Folge 1.ogg", "Folge 2.mp3", "Folge 10.mp3", "Folge 3.mp3" }, Names());
+                Assert.Contains("CD 2" + Path.DirectorySeparatorChar + "Folge 3.mp3", list.Items.Cast<TrackSortDialog.Row>().Last().Display);
+                Assert.Contains("1 file skipped", dialog.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).Where(t => t != null).Single(t => t.Contains("skipped")));
+                Screenshot(dialog, "dialog-tracksort");
+
+                list.SelectedItems.Add(list.Items.Cast<TrackSortDialog.Row>().Last());
+                Click(FindButton(dialog, "Up"));
+                Assert.Equal(new[] { "Folge 1.ogg", "Folge 2.mp3", "Folge 3.mp3", "Folge 10.mp3" }, Names());
+
+                list.SelectedItems.Clear();
+                list.SelectedItems.Add(list.Items.Cast<TrackSortDialog.Row>().First());
+                Click(FindButton(dialog, "Remove"));
+                Click(FindButton(dialog, "OK"));
+
+                Assert.Equal(new[] { "Folge 2.mp3", "Folge 3.mp3", "Folge 10.mp3" }, dialog.Result.Select(Path.GetFileName).ToArray());
+            }
         }
 
         [AvaloniaFact]

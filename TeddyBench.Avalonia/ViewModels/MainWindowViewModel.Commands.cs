@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using TeddyBench.Core;
+using TeddyBench.Core.Tracks;
 using TonieFile;
 
 namespace TeddyBench.Avalonia.ViewModels
@@ -15,6 +16,8 @@ namespace TeddyBench.Avalonia.ViewModels
         private bool CanModifySelection => HasSelection && IsIdle;
         private bool CanModifySingle => HasSingleSelection && IsIdle;
         private bool CanAddFiles => IsCardOpen && IsIdle;
+        /// <summary>Enables the Add button (its menu holds the Files/Folder commands).</summary>
+        public bool CanAdd => CanAddFiles;
         private bool CanPlayStop => CanPlay && (Services.Player.IsPlaying || HasSingleSelection);
 
         partial void OnIsBusyChanged(bool value) => NotifySelectionCommands();
@@ -23,6 +26,8 @@ namespace TeddyBench.Avalonia.ViewModels
         private void NotifySelectionCommands()
         {
             AddFilesCommand.NotifyCanExecuteChanged();
+            AddFolderCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanAdd));
             DeleteSelectedCommand.NotifyCanExecuteChanged();
             SaveSelectedCommand.NotifyCanExecuteChanged();
             ExportSelectedCommand.NotifyCanExecuteChanged();
@@ -34,11 +39,7 @@ namespace TeddyBench.Avalonia.ViewModels
             PlayStopCommand.NotifyCanExecuteChanged();
         }
 
-        private static bool IsAudioFile(string file)
-        {
-            string ext = Path.GetExtension(file);
-            return ext.Equals(".mp3", StringComparison.OrdinalIgnoreCase) || ext.Equals(".ogg", StringComparison.OrdinalIgnoreCase);
-        }
+        private static bool IsAudioFile(string file) => TrackList.IsAudioFile(file);
 
         [RelayCommand]
         private async Task OpenDirectory()
@@ -62,11 +63,21 @@ namespace TeddyBench.Avalonia.ViewModels
             string[] files = await Dialogs.PickFiles("Add files", true);
             if (files != null && files.Length > 0)
             {
-                await AddFilesAsync(files, await AskAudioId());
+                await AddFilesAsync(files, AskAudioId);
             }
         }
 
-        /// <summary>Files dropped onto the window.</summary>
+        [RelayCommand(CanExecute = nameof(CanAddFiles))]
+        private async Task AddFolder()
+        {
+            string folder = await Dialogs.PickFolder("Add folder");
+            if (folder != null)
+            {
+                await AddFilesAsync(new[] { folder }, AskAudioId);
+            }
+        }
+
+        /// <summary>Files and folders dropped onto the window.</summary>
         public async Task DropFiles(string[] files)
         {
             if (files == null || files.Length == 0 || !CanAddFiles)
@@ -77,7 +88,7 @@ namespace TeddyBench.Avalonia.ViewModels
                 }
                 return;
             }
-            await AddFilesAsync(files, await AskAudioId());
+            await AddFilesAsync(files, AskAudioId);
         }
 
         private async Task<uint> AskAudioId()
@@ -91,8 +102,63 @@ namespace TeddyBench.Avalonia.ViewModels
             return id ?? uint.MaxValue;
         }
 
-        /// <summary>Asks for the tag UID, then encodes MP3/Ogg files or copies an existing tonie file.</summary>
-        internal async Task AddFilesAsync(string[] fileNames, uint id = uint.MaxValue)
+        /// <summary>
+        /// A single file is encoded (MP3/Ogg) or copied (tonie file) directly. Folders or several files go to the
+        /// Sort tracks dialog first. Then the audio ID and the tag UID are asked for, and all tracks become one tonie.
+        /// </summary>
+        /// <param name="askAudioId">Asks for the audio ID; null uses a new custom ID without asking.</param>
+        internal async Task AddFilesAsync(string[] paths, Func<Task<uint>> askAudioId = null)
+        {
+            askAudioId = askAudioId ?? (() => Task.FromResult(uint.MaxValue));
+
+            if (paths.Length == 1 && File.Exists(paths[0]))
+            {
+                await AddSingleFile(paths[0], await askAudioId());
+                return;
+            }
+
+            var tracks = new TrackList();
+            var added = tracks.Add(paths);
+            if (tracks.Tracks.Count == 0)
+            {
+                string text = added.EmptyFolders.Count > 0 && added.Skipped == 0
+                    ? "No MP3/Ogg files found in " + string.Join(", ", added.EmptyFolders) + "."
+                    : "Please select MP3/Ogg files only.";
+                await Dialogs.ShowMessage(text, "Add file...");
+                return;
+            }
+
+            string[] sorted = await Dialogs.SortTracks(tracks, SkippedNote(added));
+            if (sorted == null || sorted.Length == 0)
+            {
+                return;
+            }
+
+            uint id = await askAudioId();
+            string uid = await Dialogs.AskUid(RfidReader);
+            if (uid == null)
+            {
+                return;
+            }
+            await EncodeFiles(uid, sorted, id);
+        }
+
+        /// <summary>The Sort tracks dialog's note about what was left out; null if nothing.</summary>
+        internal static string SkippedNote(TrackAddResult result)
+        {
+            var parts = new System.Collections.Generic.List<string>();
+            if (result.Skipped > 0)
+            {
+                parts.Add(result.Skipped + (result.Skipped == 1 ? " file" : " files") + " skipped (not MP3/Ogg or already added)");
+            }
+            if (result.EmptyFolders.Count > 0)
+            {
+                parts.Add("no MP3/Ogg files in " + string.Join(", ", result.EmptyFolders.Select(Path.GetFileName)));
+            }
+            return parts.Count == 0 ? null : string.Join("; ", parts) + ".";
+        }
+
+        private async Task AddSingleFile(string fileName, uint id)
         {
             string uid = await Dialogs.AskUid(RfidReader);
             if (uid == null)
@@ -100,50 +166,31 @@ namespace TeddyBench.Avalonia.ViewModels
                 return;
             }
 
-            if (fileNames.Length == 1)
+            if (IsAudioFile(fileName))
             {
-                string fileName = fileNames[0];
-
-                if (IsAudioFile(fileName))
+                if (await Dialogs.AskYesNo("You are about to encode a single MP3/Ogg, is this right?", "Encode a file"))
                 {
-                    if (await Dialogs.AskYesNo("You are about to encode a single MP3/Ogg, is this right?", "Encode a file"))
-                    {
-                        await EncodeFiles(uid, new[] { fileName }, id);
-                    }
-                    return;
+                    await EncodeFiles(uid, new[] { fileName }, id);
                 }
-
-                bool valid;
-                try
-                {
-                    valid = TonieAudio.FromFile(fileName).FileContent.Length > 0;
-                }
-                catch (Exception ex)
-                {
-                    valid = false;
-                }
-
-                if (!valid)
-                {
-                    await Dialogs.ShowMessage("The file you have chosen is not supported.", "Add file...");
-                    return;
-                }
-                await CopyFile(uid, fileName);
                 return;
             }
 
-            if (fileNames.Any(f => !IsAudioFile(f)))
+            bool valid;
+            try
             {
-                await Dialogs.ShowMessage("Please select MP3/Ogg files only.", "Add file...");
-                return;
+                valid = TonieAudio.FromFile(fileName).FileContent.Length > 0;
+            }
+            catch (Exception ex)
+            {
+                valid = false;
             }
 
-            string[] sorted = await Dialogs.SortTracks(fileNames);
-            if (sorted == null)
+            if (!valid)
             {
+                await Dialogs.ShowMessage("The file you have chosen is not supported.", "Add file...");
                 return;
             }
-            await EncodeFiles(uid, sorted, id);
+            await CopyFile(uid, fileName);
         }
 
         private Task CopyFile(string uid, string fileName)

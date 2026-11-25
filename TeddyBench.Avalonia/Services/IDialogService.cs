@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TeddyBench.Core;
+using TeddyBench.Core.Tracks;
 
 namespace TeddyBench.Avalonia.Services
 {
@@ -44,8 +45,11 @@ namespace TeddyBench.Avalonia.Services
 
         /// <summary>Shows a diagnostic report for review; null if the user does not want to send it.</summary>
         Task<ReportResult> ShowReport(string content, string defaultUsername);
-        /// <summary>Lets the user order MP3/Ogg files; null if cancelled.</summary>
-        Task<string[]> SortTracks(string[] files);
+        /// <summary>
+        /// Lets the user add more files/folders to <paramref name="tracks"/> and order them; the files in their
+        /// final order, or null if cancelled. <paramref name="note"/> (may be null) says what was skipped.
+        /// </summary>
+        Task<string[]> SortTracks(TrackList tracks, string note);
         /// <summary>Shows (<paramref name="display"/>) or asks for a tag dump (hex); null if cancelled.</summary>
         Task<string> ShowTagDump(bool display, string initial);
         Task<bool> AskUpdate(string version, string releaseName, bool canInstall);

@@ -9,121 +9,198 @@ using Avalonia.Threading;
 using Id3;
 using ScottPlot.Avalonia;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using TeddyBench.Core;
+using TeddyBench.Core.Tracks;
 
 namespace TeddyBench.Avalonia.Views.Dialogs
 {
-    /// <summary>Orders the MP3/Ogg files of a new tonie (initially by ID3 track number).</summary>
+    /// <summary>
+    /// Collects and orders the tracks of a new tonie: more files/folders can be added, the whole list sorted by a
+    /// criterion (default: folder, then name), and single tracks moved or removed.
+    /// </summary>
     public class TrackSortDialog : DialogBase
     {
-        public class Track
+        public class Row
         {
-            public string File { get; set; }
-            public string Id3 { get; set; }
-            public int Number { get; set; }
-            public string Display => Number.ToString().PadLeft(3) + "   " + Path.GetFileName(File) + (string.IsNullOrEmpty(Id3) ? "" : "   (" + Id3 + ")");
+            public Track Track { get; set; }
+            public string Display { get; set; }
+            public string File => Track.File;
         }
 
-        private readonly ObservableCollection<Track> Tracks = new ObservableCollection<Track>();
+        /// <summary>Order of the "Sort by" entries.</summary>
+        public static readonly (TrackSortCriterion Criterion, string Label)[] Criteria =
+        {
+            (TrackSortCriterion.FolderThenName, "Folder, then name"),
+            (TrackSortCriterion.Name, "Name"),
+            (TrackSortCriterion.Id3TrackNumber, "ID3 track number"),
+            (TrackSortCriterion.OrderAdded, "Order added")
+        };
+
+        private readonly TrackList Tracks;
+        private readonly ObservableCollection<Row> Rows = new ObservableCollection<Row>();
         private readonly ListBox List;
+        private readonly ComboBox SortBox;
+        private readonly TextBlock Note;
+        private readonly Button Ok;
 
         public string[] Result { get; private set; }
 
-        public TrackSortDialog(string[] files) : base("Sort tracks")
+        /// <summary>Plain list of files (e.g. for tests); same as adding them to a new <see cref="TrackList"/>.</summary>
+        public TrackSortDialog(string[] files) : this(NewList(files), null)
         {
+        }
+
+        public TrackSortDialog(TrackList tracks, string note) : base("Sort tracks")
+        {
+            Tracks = tracks;
             CanResize = true;
             SizeToContent = SizeToContent.Manual;
-            Width = 720;
-            Height = 460;
-
-            foreach (var t in files.Select(f => new { File = f, Tag = GetTag(f) }).OrderBy(t => t.Tag?.Track.Value ?? int.MaxValue))
-            {
-                Tracks.Add(new Track { File = t.File, Id3 = t.Tag == null ? null : t.Tag.Artists + " - " + t.Tag.Title });
-            }
-            Renumber();
+            Width = 820;
+            Height = 520;
 
             List = new ListBox
             {
-                ItemsSource = Tracks,
+                ItemsSource = Rows,
                 SelectionMode = SelectionMode.Multiple,
                 FontFamily = new FontFamily("Cascadia Mono,Consolas,DejaVu Sans Mono,Liberation Mono,monospace"),
-                ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<Track>((t, _) => new TextBlock { Text = t?.Display })
+                ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<Row>((r, _) => new TextBlock { Text = r?.Display })
             };
 
-            var side = new StackPanel { Spacing = 8, Margin = new Thickness(8, 0, 0, 0) };
-            side.Children.Add(MakeButton("Up", () => Move(-1)));
-            side.Children.Add(MakeButton("Down", () => Move(1)));
-            DockPanel.SetDock(side, Dock.Right);
+            SortBox = new ComboBox
+            {
+                ItemsSource = Criteria.Select(c => c.Label).ToArray(),
+                SelectedIndex = Array.FindIndex(Criteria, c => c.Criterion == tracks.Criterion),
+                MinWidth = 180
+            };
+            SortBox.SelectionChanged += (s, e) =>
+            {
+                if (SortBox.SelectedIndex >= 0)
+                {
+                    Tracks.Sort(Criteria[SortBox.SelectedIndex].Criterion);
+                    Refresh(new Track[0]);
+                }
+            };
 
-            var buttons = ButtonRow(MakeButton("OK", () => { Result = Tracks.Select(t => t.File).ToArray(); Close(); }, isDefault: true), MakeButton("Cancel", Close, isCancel: true));
-            DockPanel.SetDock(buttons, Dock.Bottom);
+            var sortRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 8) };
+            sortRow.Children.Add(new TextBlock { Text = "Sort by", VerticalAlignment = VerticalAlignment.Center });
+            sortRow.Children.Add(SortBox);
 
-            var hint = Text("The tracks are written in this order. Select tracks and move them with Up/Down.");
+            var hint = Text("The tracks are written in this order. Select tracks and move them with Up/Down; choosing a sort order again replaces manual moves.", 760);
             hint.HorizontalAlignment = HorizontalAlignment.Left;
             hint.Margin = new Thickness(0, 0, 0, 8);
-            DockPanel.SetDock(hint, Dock.Top);
+
+            var top = new StackPanel();
+            top.Children.Add(hint);
+            top.Children.Add(sortRow);
+            DockPanel.SetDock(top, Dock.Top);
+
+            var side = new StackPanel { Spacing = 8, Margin = new Thickness(8, 0, 0, 0) };
+            side.Children.Add(MakeButton("Add files...", AddFiles));
+            side.Children.Add(MakeButton("Add folder...", AddFolder));
+            side.Children.Add(new Separator());
+            side.Children.Add(MakeButton("Up", () => Move(-1)));
+            side.Children.Add(MakeButton("Down", () => Move(1)));
+            side.Children.Add(MakeButton("Remove", Remove));
+            foreach (var b in side.Children.OfType<Button>())
+            {
+                b.HorizontalAlignment = HorizontalAlignment.Stretch;
+            }
+            DockPanel.SetDock(side, Dock.Right);
+
+            Ok = MakeButton("OK", () => { Result = Tracks.Files; Close(); }, isDefault: true);
+            var buttons = ButtonRow(Ok, MakeButton("Cancel", Close, isCancel: true));
+            Note = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 16, 16, 0), Opacity = 0.75 };
+            var bottom = new DockPanel();
+            DockPanel.SetDock(buttons, Dock.Right);
+            bottom.Children.Add(buttons);
+            bottom.Children.Add(Note);
+            DockPanel.SetDock(bottom, Dock.Bottom);
 
             var panel = new DockPanel { Margin = new Thickness(16) };
-            panel.Children.Add(hint);
-            panel.Children.Add(buttons);
+            panel.Children.Add(top);
+            panel.Children.Add(bottom);
             panel.Children.Add(side);
             panel.Children.Add(List);
             Content = panel;
+
+            SetNote(note);
+            Refresh(new Track[0]);
         }
 
-        private static Id3Tag GetTag(string file)
+        private static TrackList NewList(string[] files)
         {
-            try
+            var list = new TrackList();
+            list.Add(files);
+            return list;
+        }
+
+        /// <summary>Adds files/folders (sorted in by the current criterion); public for tests.</summary>
+        public void AddPaths(string[] paths)
+        {
+            if (paths == null || paths.Length == 0)
             {
-                using (var mp3 = new Mp3(file, Mp3Permissions.Read))
-                {
-                    return mp3.GetAllTags().FirstOrDefault(t => t.Track.IsAssigned);
-                }
+                return;
             }
-            catch (Exception)
+            var result = Tracks.Add(paths);
+            SetNote(ViewModels.MainWindowViewModel.SkippedNote(result));
+            Refresh(List.SelectedItems.Cast<Row>().Select(r => r.Track).ToList());
+        }
+
+        private async void AddFiles()
+        {
+            AddPaths(await Services.DialogService.PickFiles(this, "Add files", true, "MP3/Ogg files", "*.mp3", "*.MP3", "*.ogg", "*.OGG"));
+        }
+
+        private async void AddFolder()
+        {
+            string folder = await Services.DialogService.PickFolder(this, "Add folder");
+            if (folder != null)
             {
-                return null;
+                AddPaths(new[] { folder });
             }
+        }
+
+        private void SetNote(string note)
+        {
+            Note.Text = note ?? "";
         }
 
         private void Move(int direction)
         {
-            var selected = List.SelectedItems.Cast<Track>().ToList();
-            if (selected.Count == 0)
+            var selected = List.SelectedItems.Cast<Row>().Select(r => r.Track).ToList();
+            if (Tracks.Move(selected, direction))
             {
-                return;
-            }
-            var indices = selected.Select(t => Tracks.IndexOf(t)).OrderBy(i => i).ToList();
-            if ((direction < 0 && indices.First() == 0) || (direction > 0 && indices.Last() == Tracks.Count - 1))
-            {
-                return;
-            }
-
-            foreach (int index in direction < 0 ? indices : Enumerable.Reverse(indices))
-            {
-                Tracks.Move(index, index + direction);
-            }
-            Renumber();
-
-            /* refresh texts and keep the selection */
-            List.ItemsSource = null;
-            List.ItemsSource = Tracks;
-            foreach (var t in selected)
-            {
-                List.SelectedItems.Add(t);
+                Refresh(selected);
             }
         }
 
-        private void Renumber()
+        private void Remove()
         {
-            for (int i = 0; i < Tracks.Count; i++)
+            Tracks.Remove(List.SelectedItems.Cast<Row>().Select(r => r.Track).ToList());
+            Refresh(new Track[0]);
+        }
+
+        /// <summary>Rebuilds the rows (numbers and relative paths change) and keeps the given tracks selected.</summary>
+        private void Refresh(IEnumerable<Track> select)
+        {
+            var keep = new HashSet<Track>(select);
+            Rows.Clear();
+            for (int i = 0; i < Tracks.Tracks.Count; i++)
             {
-                Tracks[i].Number = i + 1;
+                var t = Tracks.Tracks[i];
+                string id3 = string.IsNullOrEmpty(t.Tags.Description) ? "" : "   (" + t.Tags.Description + ")";
+                Rows.Add(new Row { Track = t, Display = (i + 1).ToString().PadLeft(3) + "   " + Tracks.RelativePath(t) + id3 });
             }
+            foreach (var row in Rows.Where(r => keep.Contains(r.Track)))
+            {
+                List.SelectedItems.Add(row);
+            }
+            Ok.IsEnabled = Rows.Count > 0;
         }
     }
 

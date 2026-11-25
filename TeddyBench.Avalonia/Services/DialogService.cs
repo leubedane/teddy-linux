@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using TeddyBench.Avalonia.Views.Dialogs;
 using TeddyBench.Core;
+using TeddyBench.Core.Tracks;
 
 namespace TeddyBench.Avalonia.Services
 {
@@ -80,7 +81,13 @@ namespace TeddyBench.Avalonia.Services
             return (await Show(new InputDialog(title, prompt, initial, s => string.IsNullOrWhiteSpace(s) ? "Please enter a name" : null))).Result;
         }
 
-        public async Task<string[]> PickFiles(string title, bool allowMultiple, string filterName = null, params string[] patterns)
+        public Task<string[]> PickFiles(string title, bool allowMultiple, string filterName = null, params string[] patterns)
+        {
+            return PickFiles(Owner, title, allowMultiple, filterName, patterns);
+        }
+
+        /// <summary>File picker of any window (also used by dialogs that pick files themselves).</summary>
+        internal static async Task<string[]> PickFiles(TopLevel owner, string title, bool allowMultiple, string filterName = null, params string[] patterns)
         {
             var types = new List<FilePickerFileType>();
             if (filterName != null && patterns != null && patterns.Length > 0)
@@ -89,7 +96,7 @@ namespace TeddyBench.Avalonia.Services
             }
             types.Add(FilePickerFileTypes.All);
 
-            var files = await Owner.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            var files = await owner.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
                 Title = title,
                 AllowMultiple = allowMultiple,
@@ -98,9 +105,14 @@ namespace TeddyBench.Avalonia.Services
             return files.Select(f => f.TryGetLocalPath()).Where(p => p != null).ToArray();
         }
 
-        public async Task<string> PickFolder(string title)
+        public Task<string> PickFolder(string title)
         {
-            var folders = await Owner.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
+            return PickFolder(Owner, title);
+        }
+
+        internal static async Task<string> PickFolder(TopLevel owner, string title)
+        {
+            var folders = await owner.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
             return folders.Select(f => f.TryGetLocalPath()).FirstOrDefault(p => p != null);
         }
 
@@ -109,9 +121,9 @@ namespace TeddyBench.Avalonia.Services
             return (await Show(new ReportDialog(content, defaultUsername))).Result;
         }
 
-        public async Task<string[]> SortTracks(string[] files)
+        public async Task<string[]> SortTracks(TrackList tracks, string note)
         {
-            return (await Show(new TrackSortDialog(files))).Result;
+            return (await Show(new TrackSortDialog(tracks, note))).Result;
         }
 
         public async Task<string> ShowTagDump(bool display, string initial)

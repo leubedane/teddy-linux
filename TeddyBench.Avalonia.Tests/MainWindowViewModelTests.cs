@@ -105,32 +105,89 @@ namespace TeddyBench.Avalonia.Tests
         }
 
         [Fact]
-        public async Task AddSeveralFiles_SortsThenEncodesInChosenOrder()
+        public async Task AddSeveralFiles_SortsFirstThenAsksUid_EncodesInChosenOrder()
         {
             using (var h = new Harness())
             {
                 h.OpenCard();
                 h.Dialogs.Uids.Enqueue(Uid1);
-                h.Dialogs.Sort = files => files.Reverse().ToArray();
+                string[] shown = null;
+                h.Dialogs.Sort = files => (shown = files).Reverse().ToArray();
 
                 await h.Vm.AddFilesAsync(new[] { Fixtures.Mp3, Fixtures.Ogg });
 
-                Assert.Equal(new[] { "uid:", "sort" }, h.Dialogs.Calls);
+                Assert.Equal(new[] { "sort", "uid:" }, h.Dialogs.Calls);
+                Assert.Equal(new[] { Fixtures.Mp3, Fixtures.Ogg }, shown);
                 var audio = TonieAudio.FromFile(new CardContent(h.Card).GetTonieFilePath(Uid1));
                 Assert.Equal(2, audio.Header.AudioChapters.Length);
             }
         }
 
         [Fact]
-        public async Task AddFiles_RejectsMixedAndUnsupportedFiles()
+        public async Task AddFolder_CollectsAudioRecursively_InFolderThenNaturalNameOrder()
+        {
+            using (var h = new Harness())
+            {
+                h.OpenCard();
+                string root = h.Dir.Combine("Hörspiel");
+                Directory.CreateDirectory(Path.Combine(root, "CD 2"));
+                Directory.CreateDirectory(Path.Combine(root, "CD 10"));
+                File.Copy(Fixtures.Mp3, Path.Combine(root, "CD 2", "Folge 10.mp3"));
+                File.Copy(Fixtures.Ogg, Path.Combine(root, "CD 2", "Folge 2.ogg"));
+                File.Copy(Fixtures.Mp3, Path.Combine(root, "CD 10", "Folge 1.mp3"));
+                File.WriteAllText(Path.Combine(root, "CD 2", "cover.jpg"), "");
+                h.Dialogs.Folders.Enqueue(root);
+                h.Dialogs.Uids.Enqueue(Uid1);
+                string[] shown = null;
+                h.Dialogs.Sort = files => shown = files;
+
+                await h.Vm.AddFolderCommand.ExecuteAsync(null);
+
+                /* the default answer to "specific Audio ID?" is No */
+                Assert.Equal(new[] { "folder:Add folder", "sort", "yesno:Set specific Audio ID", "uid:" }, h.Dialogs.Calls);
+                Assert.Equal(new[] { "CD 2/Folge 2.ogg", "CD 2/Folge 10.mp3", "CD 10/Folge 1.mp3" },
+                    shown.Select(f => Path.GetRelativePath(root, f)).ToArray());
+                Assert.Null(h.Dialogs.SortNote);
+                Assert.Equal(3, TonieAudio.FromFile(new CardContent(h.Card).GetTonieFilePath(Uid1)).Header.AudioChapters.Length);
+            }
+        }
+
+        [Fact]
+        public async Task AddFolder_WithSingleTrack_StillShowsSortDialog()
+        {
+            using (var h = new Harness())
+            {
+                h.OpenCard();
+                string root = h.Dir.Combine("One");
+                Directory.CreateDirectory(root);
+                File.Copy(Fixtures.Mp3, Path.Combine(root, "a.mp3"));
+                h.Dialogs.Sort = files => null;
+
+                await h.Vm.AddFilesAsync(new[] { root });
+
+                Assert.Equal(new[] { "sort" }, h.Dialogs.Calls);
+                Assert.Empty(Directory.GetDirectories(h.Card));
+            }
+        }
+
+        [Fact]
+        public async Task AddFiles_SkipsNonAudio_RejectsWhenNothingIsLeft()
         {
             using (var h = new Harness())
             {
                 h.OpenCard();
                 string notes = Path.Combine(Fixtures.Album, "notes.txt");
+                string empty = h.Dir.Combine("Empty");
+                Directory.CreateDirectory(empty);
 
-                h.Dialogs.Uids.Enqueue(Uid1);
-                await h.Vm.AddFilesAsync(new[] { Fixtures.Mp3, notes });
+                h.Dialogs.Sort = files => null;
+                await h.Vm.AddFilesAsync(new[] { Fixtures.Mp3, notes, empty });
+                Assert.Equal("1 file skipped (not MP3/Ogg or already added); no MP3/Ogg files in Empty.", h.Dialogs.SortNote);
+
+                await h.Vm.AddFilesAsync(new[] { empty });
+                Assert.Equal("No MP3/Ogg files found in " + empty + ".", h.Dialogs.Messages.Last());
+
+                await h.Vm.AddFilesAsync(new[] { notes, notes });
                 Assert.Equal("Please select MP3/Ogg files only.", h.Dialogs.Messages.Last());
 
                 h.Dialogs.Uids.Enqueue(Uid1);
@@ -168,6 +225,8 @@ namespace TeddyBench.Avalonia.Tests
                 await h.Vm.DropFiles(new[] { Fixtures.Mp3 });
                 Assert.Equal(new[] { "message:Add file..." }, h.Dialogs.Calls);
                 Assert.False(h.Vm.AddFilesCommand.CanExecute(null));
+                Assert.False(h.Vm.AddFolderCommand.CanExecute(null));
+                Assert.False(h.Vm.CanAdd);
             }
         }
 

@@ -92,7 +92,15 @@
         </Grid>
 
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-          <Button Content="Add..." Command="{Binding AddFilesCommand}" ToolTip.Tip="Encode MP3/Ogg files or copy a tonie file onto the card (files can also be dropped here)" />
+          <Button x:Name="AddButton" Content="Add..." IsEnabled="{Binding CanAdd}"
+                  ToolTip.Tip="Encode MP3/Ogg files or folders, or copy a tonie file onto the card (files and folders can also be dropped here)">
+            <Button.Flyout>
+              <MenuFlyout Placement="TopEdgeAlignedLeft">
+                <MenuItem Header="Files..." Command="{Binding AddFilesCommand}" />
+                <MenuItem Header="Folder..." Command="{Binding AddFolderCommand}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
           <Button Content="Delete..." Command="{Binding DeleteSelectedCommand}" />
           <Button Content="Save as .ogg..." Command="{Binding SaveSelectedCommand}" />
         </StackPanel>
